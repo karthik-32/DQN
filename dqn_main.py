@@ -10,12 +10,6 @@ import torch.nn as nn
 import torch.optim as optim
 
 
-def one_hot(state: int, n_states: int) -> np.ndarray:
-    v = np.zeros(n_states, dtype=np.float32)
-    v[state] = 1.0
-    return v
-
-
 class ReplayBuffer:
     def __init__(self, capacity: int):
         self.buffer = deque(maxlen=capacity)
@@ -27,10 +21,10 @@ class ReplayBuffer:
         batch = random.sample(self.buffer, batch_size)
         s, a, r, s2, done = zip(*batch)
         return (
-            np.stack(s).astype(np.float32),
+            np.array(s, dtype=np.int64),
             np.array(a, dtype=np.int64),
             np.array(r, dtype=np.float32),
-            np.stack(s2).astype(np.float32),
+            np.array(s2, dtype=np.int64),
             np.array(done, dtype=np.float32),
         )
 
@@ -39,84 +33,84 @@ class ReplayBuffer:
 
 
 class DQN(nn.Module):
-    def __init__(self, n_states: int, n_actions: int, hidden=128):
+    def __init__(self, n_states: int, n_actions: int, emb_dim=32, hidden=128):
         super().__init__()
+        self.emb = nn.Embedding(n_states, emb_dim)
         self.net = nn.Sequential(
-            nn.Linear(n_states, hidden),
+            nn.Linear(emb_dim, hidden),
             nn.ReLU(),
             nn.Linear(hidden, hidden),
             nn.ReLU(),
             nn.Linear(hidden, n_actions),
         )
 
-    def forward(self, x):
+    def forward(self, s_idx: torch.Tensor):
+        # s_idx: [B] long
+        x = self.emb(s_idx)
         return self.net(x)
 
 
 def train_double_dqn(
     episodes=2000,
-    size=15,
-    model_path="double_dqn_grid_15.pt",
+    size=30,
+    model_path="double_dqn_grid_30.pt",
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device, flush=True)
 
-    env = gym.make("gymnasium_env/GridWorld-v0", size=size, render_mode=None)
+    max_steps = size * size * 3
+    env = gym.make("gymnasium_env/GridWorld-v0", size=size, render_mode=None, max_steps=max_steps)
 
     n_states = env.observation_space.n
     n_actions = env.action_space.n
 
-    policy_net = DQN(n_states, n_actions, hidden=128).to(device)
-    target_net = DQN(n_states, n_actions, hidden=128).to(device)
+    policy_net = DQN(n_states, n_actions, emb_dim=32, hidden=128).to(device)
+    target_net = DQN(n_states, n_actions, emb_dim=32, hidden=128).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
     optimizer = optim.Adam(policy_net.parameters(), lr=1e-3)
     loss_fn = nn.SmoothL1Loss()
 
-    buffer = ReplayBuffer(capacity=50_000)
+    buffer = ReplayBuffer(capacity=80_000)
 
     gamma = 0.99
-    batch_size = 64
-    warmup = 500
+    batch_size = 128
+    warmup = 1500
 
     epsilon = 1.0
     epsilon_min = 0.05
-    epsilon_decay = 0.999  # faster decay
+    epsilon_decay = 0.999
 
-    max_steps_per_episode = size * size * 3  # 675 steps
     target_update_steps = 300
     step_count = 0
 
     print("🏋️ Double DQN training started...", flush=True)
 
+    success_window = deque(maxlen=100)
+
     for ep in range(episodes):
         state, _ = env.reset()
-        s_vec = one_hot(state, n_states)
-
         terminated = truncated = False
-        steps = 0
         ep_reward = 0.0
 
-        while not (terminated or truncated) and steps < max_steps_per_episode:
-            steps += 1
+        while not (terminated or truncated):
             step_count += 1
 
             if random.random() < epsilon:
                 action = env.action_space.sample()
             else:
                 with torch.no_grad():
-                    s_t = torch.from_numpy(s_vec).unsqueeze(0).to(device)
-                    qs = policy_net(s_t)
-                    action = int(torch.argmax(qs, dim=1).item())
+                    s_t = torch.tensor([state], dtype=torch.long, device=device)
+                    q = policy_net(s_t)[0]
+                    action = int(torch.argmax(q).item())
 
             new_state, reward, terminated, truncated, _ = env.step(action)
-            s2_vec = one_hot(new_state, n_states)
             done = float(terminated or truncated)
 
-            buffer.push(s_vec, action, reward, s2_vec, done)
+            buffer.push(state, action, reward, new_state, done)
 
-            s_vec = s2_vec
+            state = new_state
             ep_reward += reward
 
             if len(buffer) >= max(warmup, batch_size):
@@ -146,9 +140,14 @@ def train_double_dqn(
                 target_net.load_state_dict(policy_net.state_dict())
 
         epsilon = max(epsilon * epsilon_decay, epsilon_min)
+        success_window.append(1 if terminated else 0)
 
         if (ep + 1) % 50 == 0:
-            print(f"Episode {ep+1}/{episodes} | reward: {ep_reward:.3f} | epsilon: {epsilon:.3f}", flush=True)
+            sr = sum(success_window) / len(success_window)
+            print(
+                f"Episode {ep+1}/{episodes} | reward: {ep_reward:.2f} | eps: {epsilon:.3f} | success(100): {sr:.2f}",
+                flush=True
+            )
 
     env.close()
 
@@ -160,6 +159,6 @@ def train_double_dqn(
 if __name__ == "__main__":
     train_double_dqn(
         episodes=2000,
-        size=15,
-        model_path="double_dqn_grid_15.pt",
+        size=30,
+        model_path="double_dqn_grid_30.pt",
     )
