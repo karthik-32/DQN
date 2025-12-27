@@ -7,36 +7,32 @@ import torch
 import torch.nn as nn
 
 
-def one_hot(state: int, n_states: int) -> np.ndarray:
-    v = np.zeros(n_states, dtype=np.float32)
-    v[state] = 1.0
-    return v
-
-
 class DQN(nn.Module):
-    def __init__(self, n_states: int, n_actions: int, hidden=128):
+    def __init__(self, n_states: int, n_actions: int, emb_dim=32, hidden=128):
         super().__init__()
+        self.emb = nn.Embedding(n_states, emb_dim)
         self.net = nn.Sequential(
-            nn.Linear(n_states, hidden),
+            nn.Linear(emb_dim, hidden),
             nn.ReLU(),
             nn.Linear(hidden, hidden),
             nn.ReLU(),
             nn.Linear(hidden, n_actions),
         )
 
-    def forward(self, x):
+    def forward(self, s_idx: torch.Tensor):
+        x = self.emb(s_idx)
         return self.net(x)
 
 
 def main():
-    size = 15
-    model_file = "double_dqn_grid_15.pt"
+    size = 30
+    model_file = "double_dqn_grid_30.pt"
 
-    env = gym.make("gymnasium_env/GridWorld-v0", size=size, render_mode="human")
+    env = gym.make("gymnasium_env/GridWorld-v0", size=size, render_mode="human", max_steps=size*size*3)
     n_states = env.observation_space.n
     n_actions = env.action_space.n
 
-    model = DQN(n_states, n_actions, hidden=128)
+    model = DQN(n_states, n_actions, emb_dim=32, hidden=128)
     model.load_state_dict(torch.load(model_file, map_location="cpu"))
     model.eval()
 
@@ -50,19 +46,17 @@ def main():
 
     while not (terminated or truncated) and steps < max_steps:
         steps += 1
-        s_vec = one_hot(state, n_states)
 
         with torch.no_grad():
-            qs = model(torch.from_numpy(s_vec).unsqueeze(0))
+            s_t = torch.tensor([state], dtype=torch.long)
+            q = model(s_t)[0].numpy()
 
-        # tie-break among equal max actions
-        q_np = qs.numpy().reshape(-1)
-        max_q = q_np.max()
-        best_actions = np.flatnonzero(q_np == max_q)
+        # tie-break random among best actions
+        best_actions = np.flatnonzero(q == q.max())
         action = int(np.random.choice(best_actions))
 
         state, reward, terminated, truncated, _ = env.step(action)
-        time.sleep(0.15)
+        time.sleep(0.08)
 
     print("Done. Close the window to exit.")
     while True:
