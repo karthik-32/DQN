@@ -27,10 +27,10 @@ class ReplayBuffer:
         batch = random.sample(self.buffer, batch_size)
         s, a, r, s2, done = zip(*batch)
         return (
-            np.stack(s).astype(np.float32),    # ✅ stack = fast
+            np.stack(s).astype(np.float32),
             np.array(a, dtype=np.int64),
             np.array(r, dtype=np.float32),
-            np.stack(s2).astype(np.float32),   # ✅ stack = fast
+            np.stack(s2).astype(np.float32),
             np.array(done, dtype=np.float32),
         )
 
@@ -54,7 +54,7 @@ class DQN(nn.Module):
 
 
 def train_double_dqn(
-    episodes=8000,
+    episodes=2000,
     size=15,
     model_path="double_dqn_grid_15.pt",
 ):
@@ -74,17 +74,17 @@ def train_double_dqn(
     optimizer = optim.Adam(policy_net.parameters(), lr=1e-3)
     loss_fn = nn.SmoothL1Loss()
 
-    buffer = ReplayBuffer(capacity=100_000)
+    buffer = ReplayBuffer(capacity=50_000)
 
     gamma = 0.99
     batch_size = 64
-    warmup = 1000
+    warmup = 500
 
     epsilon = 1.0
     epsilon_min = 0.05
-    epsilon_decay = 0.999
+    epsilon_decay = 0.999  # faster decay
 
-    max_steps_per_episode = size * size * 3  # 675
+    max_steps_per_episode = size * size * 3  # 675 steps
     target_update_steps = 300
     step_count = 0
 
@@ -102,12 +102,10 @@ def train_double_dqn(
             steps += 1
             step_count += 1
 
-            # epsilon-greedy
             if random.random() < epsilon:
                 action = env.action_space.sample()
             else:
                 with torch.no_grad():
-                    # ✅ FAST: from_numpy instead of torch.tensor([s_vec])
                     s_t = torch.from_numpy(s_vec).unsqueeze(0).to(device)
                     qs = policy_net(s_t)
                     action = int(torch.argmax(qs, dim=1).item())
@@ -121,21 +119,17 @@ def train_double_dqn(
             s_vec = s2_vec
             ep_reward += reward
 
-            # Learn
             if len(buffer) >= max(warmup, batch_size):
                 s_b, a_b, r_b, s2_b, done_b = buffer.sample(batch_size)
 
-                # ✅ FAST batch conversion
                 s_b = torch.from_numpy(s_b).to(device)
                 a_b = torch.from_numpy(a_b).to(device).unsqueeze(1)
                 r_b = torch.from_numpy(r_b).to(device)
                 s2_b = torch.from_numpy(s2_b).to(device)
                 done_b = torch.from_numpy(done_b).to(device)
 
-                # Q(s,a) from policy net
                 q_sa = policy_net(s_b).gather(1, a_b).squeeze(1)
 
-                # Double DQN target
                 with torch.no_grad():
                     next_actions = policy_net(s2_b).argmax(dim=1, keepdim=True)
                     next_q = target_net(s2_b).gather(1, next_actions).squeeze(1)
@@ -153,7 +147,6 @@ def train_double_dqn(
 
         epsilon = max(epsilon * epsilon_decay, epsilon_min)
 
-        # print progress more often so you KNOW it's training
         if (ep + 1) % 50 == 0:
             print(f"Episode {ep+1}/{episodes} | reward: {ep_reward:.3f} | epsilon: {epsilon:.3f}", flush=True)
 
@@ -166,7 +159,7 @@ def train_double_dqn(
 
 if __name__ == "__main__":
     train_double_dqn(
-        episodes=8000,
+        episodes=2000,
         size=15,
         model_path="double_dqn_grid_15.pt",
     )
