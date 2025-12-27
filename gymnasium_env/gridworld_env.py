@@ -21,7 +21,7 @@ class GridWorldEnv(gym.Env):
         self.render_mode = render_mode
 
         self.observation_space = spaces.Discrete(self.size * self.size)
-        self.action_space = spaces.Discrete(4)
+        self.action_space = spaces.Discrete(4)  # up/down/left/right
 
         self.start_pos = (0, 0)
         self.goal_pos = (self.size - 1, self.size - 1)
@@ -48,7 +48,7 @@ class GridWorldEnv(gym.Env):
     def _make_static_obstacles(self):
         obs = set()
 
-        # vertical walls (col, gaps)
+        # vertical walls with gaps
         walls = [
             (3, [2, 10]),
             (7, [5, 12]),
@@ -62,7 +62,7 @@ class GridWorldEnv(gym.Env):
                     continue
                 obs.add((row, col))
 
-        # horizontal walls (row, gaps)
+        # horizontal walls with gaps
         h_walls = [
             (5, [1, 8, 13]),
             (9, [4, 10]),
@@ -106,9 +106,9 @@ class GridWorldEnv(gym.Env):
         terminated = (self.state == self.goal_state)
         truncated = False
 
-        # shortest-path shaping
+        # ✅ faster learning rewards
         if terminated:
-            reward = 10.0
+            reward = 20.0          # increased from 10
         elif hit_obstacle:
             reward = -1.0
         else:
