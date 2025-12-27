@@ -41,7 +41,6 @@ def main():
     model.eval()
 
     state, _ = env.reset()
-
     print("GridWorld opened. Starting in 2 seconds...")
     time.sleep(2)
 
@@ -54,11 +53,13 @@ def main():
         s_vec = one_hot(state, n_states)
 
         with torch.no_grad():
-            qs = model(torch.tensor([s_vec]))
+            qs = model(torch.from_numpy(s_vec).unsqueeze(0))
+
+        # tie-break among equal max actions
         q_np = qs.numpy().reshape(-1)
         max_q = q_np.max()
         best_actions = np.flatnonzero(q_np == max_q)
-        action = int(np.random.choice(best_actions))  # tie-break only
+        action = int(np.random.choice(best_actions))
 
         state, reward, terminated, truncated, _ = env.step(action)
         time.sleep(0.15)
