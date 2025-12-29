@@ -33,7 +33,7 @@ class ReplayBuffer:
 
 
 class DQN(nn.Module):
-    def __init__(self, n_states: int, n_actions: int, emb_dim=64, hidden=256):
+    def __init__(self, n_states: int, n_actions: int, emb_dim=32, hidden=128):
         super().__init__()
         self.emb = nn.Embedding(n_states, emb_dim)
         self.net = nn.Sequential(
@@ -50,43 +50,46 @@ class DQN(nn.Module):
 
 
 def train_double_dqn(
-    episodes=8000,              # ✅ 2000 is often too low for 30x30; start 8000
+    episodes=4000,                 # ✅ reduced from huge values
     size=30,
     model_path="double_dqn_grid_30.pt",
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device, flush=True)
 
-    max_steps = size * size * 6  # ✅ 5400 steps
+    # ✅ reduce max_steps drastically for speed
+    max_steps = size * size * 2  # 1800
     env = gym.make("gymnasium_env/GridWorld-v0", size=size, render_mode=None, max_steps=max_steps)
 
     n_states = env.observation_space.n
     n_actions = env.action_space.n
 
-    policy_net = DQN(n_states, n_actions, emb_dim=64, hidden=256).to(device)
-    target_net = DQN(n_states, n_actions, emb_dim=64, hidden=256).to(device)
+    policy_net = DQN(n_states, n_actions, emb_dim=32, hidden=128).to(device)
+    target_net = DQN(n_states, n_actions, emb_dim=32, hidden=128).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=8e-4)
+    optimizer = optim.Adam(policy_net.parameters(), lr=1e-3)
     loss_fn = nn.SmoothL1Loss()
 
-    buffer = ReplayBuffer(capacity=200_000)
+    # ✅ smaller replay for speed
+    buffer = ReplayBuffer(capacity=80_000)
 
     gamma = 0.99
-    batch_size = 256
-    warmup = 3000
+    batch_size = 64          # ✅ much faster
+    warmup = 1000            # ✅ start learning earlier
 
     epsilon = 1.0
     epsilon_min = 0.05
-    epsilon_decay = 0.9995
+    epsilon_decay = 0.9993
 
-    target_update_steps = 500
+    target_update_steps = 400
     step_count = 0
+    train_every = 4          # ✅ train only every 4 steps (4x faster)
 
     success_window = deque(maxlen=100)
 
-    print("🏋️ Double DQN training started...", flush=True)
+    print("🏋️ FAST Double DQN training started...", flush=True)
 
     for ep in range(episodes):
         state, _ = env.reset()
@@ -96,6 +99,7 @@ def train_double_dqn(
         while not (terminated or truncated):
             step_count += 1
 
+            # epsilon-greedy
             if random.random() < epsilon:
                 action = env.action_space.sample()
             else:
@@ -108,11 +112,11 @@ def train_double_dqn(
             done = float(terminated or truncated)
 
             buffer.push(state, action, reward, new_state, done)
-
             state = new_state
             ep_reward += reward
 
-            if len(buffer) >= max(warmup, batch_size):
+            # ✅ train less frequently
+            if (step_count % train_every == 0) and len(buffer) >= max(warmup, batch_size):
                 s_b, a_b, r_b, s2_b, done_b = buffer.sample(batch_size)
 
                 s_b = torch.from_numpy(s_b).to(device)
@@ -144,7 +148,7 @@ def train_double_dqn(
         if (ep + 1) % 50 == 0:
             sr = sum(success_window) / len(success_window)
             print(
-                f"Episode {ep+1}/{episodes} | reward: {ep_reward:.1f} | eps: {epsilon:.3f} | success(100): {sr:.2f}",
+                f"Ep {ep+1}/{episodes} | reward {ep_reward:.1f} | eps {epsilon:.3f} | success(100) {sr:.2f}",
                 flush=True
             )
 
