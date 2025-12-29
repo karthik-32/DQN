@@ -7,7 +7,7 @@ import torch.nn as nn
 
 
 class DQN(nn.Module):
-    def __init__(self, n_states: int, n_actions: int, emb_dim=64, hidden=256):
+    def __init__(self, n_states: int, n_actions: int, emb_dim=32, hidden=128):
         super().__init__()
         self.emb = nn.Embedding(n_states, emb_dim)
         self.net = nn.Sequential(
@@ -27,17 +27,13 @@ def main():
     size = 30
     model_file = "double_dqn_grid_30.pt"
 
-    env = gym.make(
-        "gymnasium_env/GridWorld-v0",
-        size=size,
-        render_mode="human",
-        max_steps=size * size * 6,  # ✅ enough steps
-    )
+    max_steps = size * size * 2
+    env = gym.make("gymnasium_env/GridWorld-v0", size=size, render_mode="human", max_steps=max_steps)
 
     n_states = env.observation_space.n
     n_actions = env.action_space.n
 
-    model = DQN(n_states, n_actions, emb_dim=64, hidden=256)
+    model = DQN(n_states, n_actions, emb_dim=32, hidden=128)
     model.load_state_dict(torch.load(model_file, map_location="cpu"))
     model.eval()
 
@@ -48,9 +44,8 @@ def main():
     steps = 0
     no_move_streak = 0
 
-    while not (terminated or truncated):
+    while not (terminated or truncated) and steps < max_steps:
         steps += 1
-
         with torch.no_grad():
             s_t = torch.tensor([state], dtype=torch.long)
             q = model(s_t)[0].numpy()
