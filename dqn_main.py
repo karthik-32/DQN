@@ -21,10 +21,10 @@ class ReplayBuffer:
         batch = random.sample(self.buffer, batch_size)
         s, a, r, s2, done = zip(*batch)
         return (
-            np.array(s, dtype=np.int64),
+            np.stack(s).astype(np.float32),
             np.array(a, dtype=np.int64),
             np.array(r, dtype=np.float32),
-            np.array(s2, dtype=np.int64),
+            np.stack(s2).astype(np.float32),
             np.array(done, dtype=np.float32),
         )
 
@@ -33,89 +33,93 @@ class ReplayBuffer:
 
 
 class DQN(nn.Module):
-    def __init__(self, n_states: int, n_actions: int, emb_dim=32, hidden=128):
+    def __init__(self, obs_dim: int, n_actions: int, hidden=256):
         super().__init__()
-        self.emb = nn.Embedding(n_states, emb_dim)
         self.net = nn.Sequential(
-            nn.Linear(emb_dim, hidden),
+            nn.Linear(obs_dim, hidden),
             nn.ReLU(),
             nn.Linear(hidden, hidden),
             nn.ReLU(),
             nn.Linear(hidden, n_actions),
         )
 
-    def forward(self, s_idx: torch.Tensor):
-        x = self.emb(s_idx)
+    def forward(self, x):
         return self.net(x)
 
 
-def train_double_dqn(
-    episodes=4000,                 # ✅ reduced from huge values
+def flatten_obs(obs: np.ndarray) -> np.ndarray:
+    return obs.reshape(-1).astype(np.float32)
+
+
+def train_fast_dqn(
+    episodes=6000,
     size=30,
-    model_path="double_dqn_grid_30.pt",
+    model_path="fast_dqn_dynamic_30.pt",
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device, flush=True)
 
-    # ✅ reduce max_steps drastically for speed
     max_steps = size * size * 2  # 1800
     env = gym.make("gymnasium_env/GridWorld-v0", size=size, render_mode=None, max_steps=max_steps)
 
-    n_states = env.observation_space.n
+    obs0, _ = env.reset()
+    obs_dim = obs0.size
     n_actions = env.action_space.n
 
-    policy_net = DQN(n_states, n_actions, emb_dim=32, hidden=128).to(device)
-    target_net = DQN(n_states, n_actions, emb_dim=32, hidden=128).to(device)
+    policy_net = DQN(obs_dim, n_actions, hidden=256).to(device)
+    target_net = DQN(obs_dim, n_actions, hidden=256).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
     optimizer = optim.Adam(policy_net.parameters(), lr=1e-3)
     loss_fn = nn.SmoothL1Loss()
 
-    # ✅ smaller replay for speed
-    buffer = ReplayBuffer(capacity=80_000)
+    buffer = ReplayBuffer(capacity=120_000)
 
     gamma = 0.99
-    batch_size = 64          # ✅ much faster
-    warmup = 1000            # ✅ start learning earlier
+    batch_size = 64
+    warmup = 1500
 
     epsilon = 1.0
     epsilon_min = 0.05
-    epsilon_decay = 0.9993
+    epsilon_decay = 0.9994
 
-    target_update_steps = 400
+    target_update_steps = 600
     step_count = 0
-    train_every = 4          # ✅ train only every 4 steps (4x faster)
+    train_every = 4  # ✅ FAST trick
 
     success_window = deque(maxlen=100)
 
-    print("🏋️ FAST Double DQN training started...", flush=True)
+    print("🏋️ FAST DQN training (dynamic obstacles) started...", flush=True)
 
     for ep in range(episodes):
-        state, _ = env.reset()
+        obs, _ = env.reset()
+        s_vec = flatten_obs(obs)
+
         terminated = truncated = False
         ep_reward = 0.0
 
         while not (terminated or truncated):
             step_count += 1
 
-            # epsilon-greedy
             if random.random() < epsilon:
                 action = env.action_space.sample()
             else:
                 with torch.no_grad():
-                    s_t = torch.tensor([state], dtype=torch.long, device=device)
+                    s_t = torch.from_numpy(s_vec).unsqueeze(0).to(device)
                     q = policy_net(s_t)[0]
                     action = int(torch.argmax(q).item())
 
-            new_state, reward, terminated, truncated, _ = env.step(action)
+            obs2, reward, terminated, truncated, _ = env.step(action)
+            s2_vec = flatten_obs(obs2)
             done = float(terminated or truncated)
 
-            buffer.push(state, action, reward, new_state, done)
-            state = new_state
+            buffer.push(s_vec, action, reward, s2_vec, done)
+
+            s_vec = s2_vec
             ep_reward += reward
 
-            # ✅ train less frequently
+            # ✅ FAST: train every N steps
             if (step_count % train_every == 0) and len(buffer) >= max(warmup, batch_size):
                 s_b, a_b, r_b, s2_b, done_b = buffer.sample(batch_size)
 
@@ -127,10 +131,10 @@ def train_double_dqn(
 
                 q_sa = policy_net(s_b).gather(1, a_b).squeeze(1)
 
+                # ✅ THIS IS THE ONLY DIFFERENCE: FAST DQN target
                 with torch.no_grad():
-                    next_actions = policy_net(s2_b).argmax(dim=1, keepdim=True)
-                    next_q = target_net(s2_b).gather(1, next_actions).squeeze(1)
-                    target = r_b + gamma * next_q * (1.0 - done_b)
+                    max_next_q = target_net(s2_b).max(dim=1).values
+                    target = r_b + gamma * max_next_q * (1.0 - done_b)
 
                 loss = loss_fn(q_sa, target)
 
@@ -159,4 +163,4 @@ def train_double_dqn(
 
 
 if __name__ == "__main__":
-    train_double_dqn()
+    train_fast_dqn()
