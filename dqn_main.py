@@ -163,4 +163,6 @@ def train_fast_dqn(
 
 
 if __name__ == "__main__":
-    train_fast_dqn()
+    train_fast_dqn(
+        episodes=12000
+    )
