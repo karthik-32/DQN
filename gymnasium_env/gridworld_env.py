@@ -20,12 +20,8 @@ class GridWorldEnv(gym.Env):
         self.size = int(size)
         self.render_mode = render_mode
 
-        # Observation: (3, size, size) float32
         self.observation_space = spaces.Box(
-            low=0.0,
-            high=1.0,
-            shape=(3, self.size, self.size),
-            dtype=np.float32,
+            low=0.0, high=1.0, shape=(3, self.size, self.size), dtype=np.float32
         )
         self.action_space = spaces.Discrete(4)
 
@@ -100,7 +96,6 @@ class GridWorldEnv(gym.Env):
         return obs
 
     def _init_dynamic_obstacles(self):
-        # 10 deterministic patrol obstacles
         specs = [
             {"pos": (2, 2),  "axis": "h", "dir": +1, "min": 2,  "max": 12},
             {"pos": (6, 24), "axis": "h", "dir": -1, "min": 16, "max": 27},
@@ -147,7 +142,6 @@ class GridWorldEnv(gym.Env):
                     nr = r + d
                 cand = (nr, c)
 
-            # bounce off static obstacles/bounds
             if (not self._in_bounds(cand[0], cand[1])) or (cand in self.static_obstacles):
                 spec["dir"] *= -1
                 d = spec["dir"]
@@ -185,7 +179,7 @@ class GridWorldEnv(gym.Env):
     def step(self, action):
         self.steps += 1
 
-        # move dynamics first
+        # move dynamic first
         self._move_dynamic_obstacles()
 
         r, c = self.agent_pos
@@ -214,7 +208,6 @@ class GridWorldEnv(gym.Env):
         terminated = (self.agent_pos == self.goal_pos)
         truncated = (self.steps >= self.max_steps)
 
-        # reward shaping
         if terminated:
             reward = 150.0
         else:
@@ -233,7 +226,11 @@ class GridWorldEnv(gym.Env):
         if self.render_mode == "human":
             self.render()
 
-        return obs, reward, terminated, truncated, {}
+        info = {
+            "hit_static": bool(hit_static),
+            "hit_dynamic": bool(hit_dynamic),
+        }
+        return obs, reward, terminated, truncated, info
 
     # ---------------- render ----------------
     def render(self):
