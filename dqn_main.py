@@ -4,10 +4,13 @@ import gymnasium as gym
 import gymnasium_env
 
 from collections import deque
+import csv
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
+import matplotlib.pyplot as plt
 
 
 class ReplayBuffer:
@@ -51,48 +54,64 @@ def flatten_obs(obs: np.ndarray) -> np.ndarray:
     return obs.reshape(-1).astype(np.float32)
 
 
+def moving_average(x, window=100):
+    if len(x) < window:
+        return np.array(x, dtype=np.float32)
+    x = np.array(x, dtype=np.float32)
+    return np.convolve(x, np.ones(window) / window, mode="valid")
+
+
 def train_fast_dqn(
     episodes=8000,
     size=30,
     model_path="fast_dqn_dynamic_30.pt",
+    log_csv="training_log.csv",
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device, flush=True)
 
-    # ✅ BIGGEST SPEED WIN: cap max steps
-    max_steps = 600  # was 1800; keeps training fast
+    # FAST settings
+    max_steps = 600
+    train_every = 8
+    batch_size = 64
+    warmup = 800
+    buffer_capacity = 60_000
+    hidden = 128
+    target_update_steps = 500
+
+    gamma = 0.99
+    epsilon = 1.0
+    epsilon_min = 0.05
+    epsilon_decay = 0.9993
+
     env = gym.make("gymnasium_env/GridWorld-v0", size=size, render_mode=None, max_steps=max_steps)
 
     obs0, _ = env.reset()
     if not hasattr(obs0, "shape"):
         raise RuntimeError("Env returned int. You are not using the Box-observation env.")
-
     obs_dim = obs0.size
     n_actions = env.action_space.n
 
-    policy_net = DQN(obs_dim, n_actions, hidden=128).to(device)
-    target_net = DQN(obs_dim, n_actions, hidden=128).to(device)
+    policy_net = DQN(obs_dim, n_actions, hidden=hidden).to(device)
+    target_net = DQN(obs_dim, n_actions, hidden=hidden).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
     optimizer = optim.Adam(policy_net.parameters(), lr=1e-3)
     loss_fn = nn.SmoothL1Loss()
 
-    buffer = ReplayBuffer(capacity=60_000)
+    buffer = ReplayBuffer(capacity=buffer_capacity)
 
-    gamma = 0.99
-    batch_size = 64
-    warmup = 800
+    # --- logging arrays ---
+    episode_rewards = []
+    episode_success = []
 
-    epsilon = 1.0
-    epsilon_min = 0.05
-    epsilon_decay = 0.9993
+    # write CSV header
+    with open(log_csv, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["episode", "reward", "success", "epsilon"])
 
-    target_update_steps = 500
     step_count = 0
-
-    train_every = 8  # ✅ fewer updates = faster
-
     success_window = deque(maxlen=100)
 
     print("🏋️ FAST DQN training (dynamic obstacles) started...", flush=True)
@@ -123,7 +142,7 @@ def train_fast_dqn(
             s_vec = s2_vec
             ep_reward += reward
 
-            # ✅ train only every N steps
+            # train less often (FAST)
             if (step_count % train_every == 0) and len(buffer) >= max(warmup, batch_size):
                 s_b, a_b, r_b, s2_b, done_b = buffer.sample(batch_size)
 
@@ -135,7 +154,7 @@ def train_fast_dqn(
 
                 q_sa = policy_net(s_b).gather(1, a_b).squeeze(1)
 
-                # ✅ FAST DQN target (NOT double dqn)
+                # FAST DQN target
                 with torch.no_grad():
                     max_next_q = target_net(s2_b).max(dim=1).values
                     target = r_b + gamma * max_next_q * (1.0 - done_b)
@@ -150,8 +169,18 @@ def train_fast_dqn(
             if step_count % target_update_steps == 0:
                 target_net.load_state_dict(policy_net.state_dict())
 
+        # per-episode logging
+        success = 1 if terminated else 0
+        success_window.append(success)
+
+        episode_rewards.append(ep_reward)
+        episode_success.append(success)
+
         epsilon = max(epsilon * epsilon_decay, epsilon_min)
-        success_window.append(1 if terminated else 0)
+
+        with open(log_csv, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([ep + 1, ep_reward, success, epsilon])
 
         if (ep + 1) % 50 == 0:
             sr = sum(success_window) / len(success_window)
@@ -163,6 +192,33 @@ def train_fast_dqn(
     env.close()
     torch.save(policy_net.state_dict(), model_path)
     print(f"✅ Training finished. Saved model to: {model_path}", flush=True)
+
+    # --- plots ---
+    # 1) reward moving avg
+    ma_r = moving_average(episode_rewards, window=100)
+    plt.figure()
+    plt.plot(ma_r)
+    plt.title("Reward (moving average, window=100)")
+    plt.xlabel("Episode")
+    plt.ylabel("Reward")
+    plt.grid(True)
+    plt.savefig("learning_reward.png", dpi=200)
+    plt.close()
+
+    # 2) success moving avg
+    ma_s = moving_average(episode_success, window=100)
+    plt.figure()
+    plt.plot(ma_s)
+    plt.title("Success Rate (moving average, window=100)")
+    plt.xlabel("Episode")
+    plt.ylabel("Success Rate")
+    plt.ylim(0, 1)
+    plt.grid(True)
+    plt.savefig("learning_success.png", dpi=200)
+    plt.close()
+
+    print("📈 Saved plots: learning_reward.png, learning_success.png", flush=True)
+    print(f"🧾 Saved log: {log_csv}", flush=True)
     print("Now run: python play.py", flush=True)
 
 
