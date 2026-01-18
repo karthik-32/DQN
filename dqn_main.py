@@ -52,7 +52,7 @@ def flatten_obs(obs: np.ndarray) -> np.ndarray:
 
 
 def train_fast_dqn(
-    episodes=6000,
+    episodes=12000,  # ✅ increased
     size=30,
     model_path="fast_dqn_dynamic_30.pt",
 ):
@@ -63,6 +63,18 @@ def train_fast_dqn(
     env = gym.make("gymnasium_env/GridWorld-v0", size=size, render_mode=None, max_steps=max_steps)
 
     obs0, _ = env.reset()
+
+    # ✅ SANITY CHECK (prevents your error)
+    if not hasattr(obs0, "shape"):
+        raise RuntimeError(
+            "Environment returned an INT state (Discrete). "
+            "You are using an old GridWorld. "
+            "Make sure gymnasium_env/gridworld_env.py has Box observation and restart runtime."
+        )
+
+    if obs0.shape != (3, size, size):
+        raise RuntimeError(f"Wrong obs shape {obs0.shape}, expected {(3, size, size)}")
+
     obs_dim = obs0.size
     n_actions = env.action_space.n
 
@@ -86,7 +98,7 @@ def train_fast_dqn(
 
     target_update_steps = 600
     step_count = 0
-    train_every = 4  # ✅ FAST trick
+    train_every = 4
 
     success_window = deque(maxlen=100)
 
@@ -115,11 +127,9 @@ def train_fast_dqn(
             done = float(terminated or truncated)
 
             buffer.push(s_vec, action, reward, s2_vec, done)
-
             s_vec = s2_vec
             ep_reward += reward
 
-            # ✅ FAST: train every N steps
             if (step_count % train_every == 0) and len(buffer) >= max(warmup, batch_size):
                 s_b, a_b, r_b, s2_b, done_b = buffer.sample(batch_size)
 
@@ -131,7 +141,7 @@ def train_fast_dqn(
 
                 q_sa = policy_net(s_b).gather(1, a_b).squeeze(1)
 
-                # ✅ THIS IS THE ONLY DIFFERENCE: FAST DQN target
+                # ✅ FAST DQN target (NOT double dqn)
                 with torch.no_grad():
                     max_next_q = target_net(s2_b).max(dim=1).values
                     target = r_b + gamma * max_next_q * (1.0 - done_b)
@@ -151,10 +161,8 @@ def train_fast_dqn(
 
         if (ep + 1) % 50 == 0:
             sr = sum(success_window) / len(success_window)
-            print(
-                f"Ep {ep+1}/{episodes} | reward {ep_reward:.1f} | eps {epsilon:.3f} | success(100) {sr:.2f}",
-                flush=True
-            )
+            print(f"Ep {ep+1}/{episodes} | reward {ep_reward:.1f} | eps {epsilon:.3f} | success(100) {sr:.2f}",
+                  flush=True)
 
     env.close()
     torch.save(policy_net.state_dict(), model_path)
@@ -163,6 +171,4 @@ def train_fast_dqn(
 
 
 if __name__ == "__main__":
-    train_fast_dqn(
-        episodes=12000
-    )
+    train_fast_dqn()
