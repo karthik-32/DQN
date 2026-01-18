@@ -55,10 +55,10 @@ def flatten_obs(obs: np.ndarray) -> np.ndarray:
 
 
 def moving_average(x, window=100):
-    if len(x) < window:
-        return np.array(x, dtype=np.float32)
     x = np.array(x, dtype=np.float32)
-    return np.convolve(x, np.ones(window) / window, mode="valid")
+    if len(x) < window:
+        return x
+    return np.convolve(x, np.ones(window, dtype=np.float32) / window, mode="valid")
 
 
 def train_fast_dqn(
@@ -76,7 +76,6 @@ def train_fast_dqn(
     batch_size = 64
     warmup = 800
     buffer_capacity = 60_000
-    hidden = 128
     target_update_steps = 500
 
     gamma = 0.99
@@ -92,8 +91,8 @@ def train_fast_dqn(
     obs_dim = obs0.size
     n_actions = env.action_space.n
 
-    policy_net = DQN(obs_dim, n_actions, hidden=hidden).to(device)
-    target_net = DQN(obs_dim, n_actions, hidden=hidden).to(device)
+    policy_net = DQN(obs_dim, n_actions, hidden=128).to(device)
+    target_net = DQN(obs_dim, n_actions, hidden=128).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
@@ -102,14 +101,16 @@ def train_fast_dqn(
 
     buffer = ReplayBuffer(capacity=buffer_capacity)
 
-    # --- logging arrays ---
+    # logs
     episode_rewards = []
     episode_success = []
+    episode_static_collisions = []
+    episode_dynamic_collisions = []
 
-    # write CSV header
+    # CSV header
     with open(log_csv, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["episode", "reward", "success", "epsilon"])
+        writer.writerow(["episode", "reward", "success", "epsilon", "static_collisions", "dynamic_collisions"])
 
     step_count = 0
     success_window = deque(maxlen=100)
@@ -122,6 +123,8 @@ def train_fast_dqn(
 
         terminated = truncated = False
         ep_reward = 0.0
+        static_hits = 0
+        dynamic_hits = 0
 
         while not (terminated or truncated):
             step_count += 1
@@ -134,7 +137,14 @@ def train_fast_dqn(
                     q = policy_net(s_t)[0]
                     action = int(torch.argmax(q).item())
 
-            obs2, reward, terminated, truncated, _ = env.step(action)
+            obs2, reward, terminated, truncated, info = env.step(action)
+
+            # count collisions (attempted hits)
+            if info.get("hit_static", False):
+                static_hits += 1
+            if info.get("hit_dynamic", False):
+                dynamic_hits += 1
+
             s2_vec = flatten_obs(obs2)
             done = float(terminated or truncated)
 
@@ -142,7 +152,6 @@ def train_fast_dqn(
             s_vec = s2_vec
             ep_reward += reward
 
-            # train less often (FAST)
             if (step_count % train_every == 0) and len(buffer) >= max(warmup, batch_size):
                 s_b, a_b, r_b, s2_b, done_b = buffer.sample(batch_size)
 
@@ -169,23 +178,25 @@ def train_fast_dqn(
             if step_count % target_update_steps == 0:
                 target_net.load_state_dict(policy_net.state_dict())
 
-        # per-episode logging
         success = 1 if terminated else 0
         success_window.append(success)
 
         episode_rewards.append(ep_reward)
         episode_success.append(success)
+        episode_static_collisions.append(static_hits)
+        episode_dynamic_collisions.append(dynamic_hits)
 
         epsilon = max(epsilon * epsilon_decay, epsilon_min)
 
         with open(log_csv, "a", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([ep + 1, ep_reward, success, epsilon])
+            writer.writerow([ep + 1, ep_reward, success, epsilon, static_hits, dynamic_hits])
 
         if (ep + 1) % 50 == 0:
             sr = sum(success_window) / len(success_window)
             print(
-                f"Ep {ep+1}/{episodes} | reward {ep_reward:.1f} | eps {epsilon:.3f} | success(100) {sr:.2f}",
+                f"Ep {ep+1}/{episodes} | R {ep_reward:.1f} | eps {epsilon:.3f} | succ100 {sr:.2f} "
+                f"| staticHit {static_hits} | dynHit {dynamic_hits}",
                 flush=True
             )
 
@@ -193,9 +204,8 @@ def train_fast_dqn(
     torch.save(policy_net.state_dict(), model_path)
     print(f"✅ Training finished. Saved model to: {model_path}", flush=True)
 
-    # --- plots ---
-    # 1) reward moving avg
-    ma_r = moving_average(episode_rewards, window=100)
+    # ---- plots ----
+    ma_r = moving_average(episode_rewards, 100)
     plt.figure()
     plt.plot(ma_r)
     plt.title("Reward (moving average, window=100)")
@@ -205,8 +215,7 @@ def train_fast_dqn(
     plt.savefig("learning_reward.png", dpi=200)
     plt.close()
 
-    # 2) success moving avg
-    ma_s = moving_average(episode_success, window=100)
+    ma_s = moving_average(episode_success, 100)
     plt.figure()
     plt.plot(ma_s)
     plt.title("Success Rate (moving average, window=100)")
@@ -217,7 +226,20 @@ def train_fast_dqn(
     plt.savefig("learning_success.png", dpi=200)
     plt.close()
 
-    print("📈 Saved plots: learning_reward.png, learning_success.png", flush=True)
+    ma_static = moving_average(episode_static_collisions, 100)
+    ma_dynamic = moving_average(episode_dynamic_collisions, 100)
+    plt.figure()
+    plt.plot(ma_static, label="Static collisions (avg100)")
+    plt.plot(ma_dynamic, label="Dynamic collisions (avg100)")
+    plt.title("Collisions vs Episodes (moving average window=100)")
+    plt.xlabel("Episode")
+    plt.ylabel("Collisions per episode")
+    plt.grid(True)
+    plt.legend()
+    plt.savefig("learning_collisions.png", dpi=200)
+    plt.close()
+
+    print("📈 Saved plots: learning_reward.png, learning_success.png, learning_collisions.png", flush=True)
     print(f"🧾 Saved log: {log_csv}", flush=True)
     print("Now run: python play.py", flush=True)
 
