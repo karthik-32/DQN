@@ -20,28 +20,25 @@ class GridWorldEnv(gym.Env):
         self.size = int(size)
         self.render_mode = render_mode
 
-        # ✅ Observation: (3, size, size)
-        # [0] agent layer, [1] goal layer, [2] obstacles layer (static + dynamic)
+        # Observation: (3, size, size) float32
         self.observation_space = spaces.Box(
             low=0.0,
             high=1.0,
             shape=(3, self.size, self.size),
             dtype=np.float32,
         )
-        self.action_space = spaces.Discrete(4)  # 0 up,1 down,2 left,3 right
+        self.action_space = spaces.Discrete(4)
 
         self.start_pos = (1, 0)
         self.goal_pos = (self.size - 1, self.size - 1)
 
         self.steps = 0
-        self.max_steps = max_steps if max_steps is not None else (self.size * self.size * 2)
+        self.max_steps = max_steps if max_steps is not None else (self.size * self.size)
 
-        # static obstacles
         self.static_obstacles = set(self._static_obstacles_fixed())
         self.static_obstacles.discard(self.start_pos)
         self.static_obstacles.discard(self.goal_pos)
 
-        # dynamic obstacles
         self.dynamic_specs = self._init_dynamic_obstacles()
         self.dynamic_positions = [sp["pos"] for sp in self.dynamic_specs]
 
@@ -52,7 +49,7 @@ class GridWorldEnv(gym.Env):
         self.screen = None
         self.clock = None
 
-    # ---------- helpers ----------
+    # ---------------- helpers ----------------
     def _in_bounds(self, r, c):
         return 0 <= r < self.size and 0 <= c < self.size
 
@@ -68,8 +65,8 @@ class GridWorldEnv(gym.Env):
         ar, ac = self.agent_pos
         gr, gc = self.goal_pos
 
-        obs[0, ar, ac] = 1.0  # agent
-        obs[1, gr, gc] = 1.0  # goal
+        obs[0, ar, ac] = 1.0
+        obs[1, gr, gc] = 1.0
 
         for (r, c) in self.static_obstacles:
             obs[2, r, c] = 1.0
@@ -103,7 +100,7 @@ class GridWorldEnv(gym.Env):
         return obs
 
     def _init_dynamic_obstacles(self):
-        # 10 deterministic patrol obstacles (organized)
+        # 10 deterministic patrol obstacles
         specs = [
             {"pos": (2, 2),  "axis": "h", "dir": +1, "min": 2,  "max": 12},
             {"pos": (6, 24), "axis": "h", "dir": -1, "min": 16, "max": 27},
@@ -118,7 +115,6 @@ class GridWorldEnv(gym.Env):
             {"pos": (10, 17),"axis": "v", "dir": +1, "min": 7,  "max": 19},
         ]
 
-        # ensure no start/goal/static collisions at initialization
         cleaned = []
         for sp in specs:
             if sp["pos"] in self.static_obstacles or sp["pos"] == self.start_pos or sp["pos"] == self.goal_pos:
@@ -136,23 +132,22 @@ class GridWorldEnv(gym.Env):
             axis = spec["axis"]
             d = spec["dir"]
 
-            nr, nc = r, c
             if axis == "h":
                 nc = c + d
                 if nc < spec["min"] or nc > spec["max"]:
                     spec["dir"] *= -1
                     d = spec["dir"]
                     nc = c + d
+                cand = (r, nc)
             else:
                 nr = r + d
                 if nr < spec["min"] or nr > spec["max"]:
                     spec["dir"] *= -1
                     d = spec["dir"]
                     nr = r + d
+                cand = (nr, c)
 
-            cand = (nr, nc)
-
-            # bounce off static obstacles / bounds
+            # bounce off static obstacles/bounds
             if (not self._in_bounds(cand[0], cand[1])) or (cand in self.static_obstacles):
                 spec["dir"] *= -1
                 d = spec["dir"]
@@ -161,11 +156,9 @@ class GridWorldEnv(gym.Env):
             if (not self._in_bounds(cand[0], cand[1])) or (cand in self.static_obstacles):
                 cand = (r, c)
 
-            # don't move into agent
             if cand == self.agent_pos:
                 cand = (r, c)
 
-            # avoid collisions
             if cand in occupied and cand != (r, c):
                 cand = (r, c)
 
@@ -175,7 +168,7 @@ class GridWorldEnv(gym.Env):
 
         self.dynamic_positions = new_positions
 
-    # ---------- gym api ----------
+    # ---------------- gym API ----------------
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.steps = 0
@@ -192,7 +185,7 @@ class GridWorldEnv(gym.Env):
     def step(self, action):
         self.steps += 1
 
-        # move dynamic obstacles first
+        # move dynamics first
         self._move_dynamic_obstacles()
 
         r, c = self.agent_pos
@@ -242,7 +235,7 @@ class GridWorldEnv(gym.Env):
 
         return obs, reward, terminated, truncated, {}
 
-    # ---------- render ----------
+    # ---------------- render ----------------
     def render(self):
         if pygame is None:
             raise ImportError("pygame not installed. Install: pip install pygame-ce")
@@ -264,27 +257,21 @@ class GridWorldEnv(gym.Env):
         self.screen.fill((255, 255, 255))
         cell = self.window_size // self.size
 
-        # static obstacles (black)
         for (rr, cc) in self.static_obstacles:
             pygame.draw.rect(self.screen, (0, 0, 0), pygame.Rect(cc * cell, rr * cell, cell, cell))
 
-        # dynamic obstacles (gray)
         for (rr, cc) in self.dynamic_positions:
             pygame.draw.rect(self.screen, (90, 90, 90), pygame.Rect(cc * cell, rr * cell, cell, cell))
 
-        # start (orange)
         sr, sc = self.start_pos
         pygame.draw.rect(self.screen, (255, 165, 0), pygame.Rect(sc * cell, sr * cell, cell, cell))
 
-        # goal (green)
         gr, gc = self.goal_pos
         pygame.draw.rect(self.screen, (0, 200, 0), pygame.Rect(gc * cell, gr * cell, cell, cell))
 
-        # agent (blue)
         ar, ac = self.agent_pos
         pygame.draw.rect(self.screen, (0, 0, 255), pygame.Rect(ac * cell, ar * cell, cell, cell))
 
-        # grid lines
         for i in range(self.size + 1):
             pygame.draw.line(self.screen, (70, 70, 70), (0, i * cell), (self.window_size, i * cell), 1)
             pygame.draw.line(self.screen, (70, 70, 70), (i * cell, 0), (i * cell, self.window_size), 1)
