@@ -33,7 +33,7 @@ class ReplayBuffer:
 
 
 class DQN(nn.Module):
-    def __init__(self, obs_dim: int, n_actions: int, hidden=256):
+    def __init__(self, obs_dim: int, n_actions: int, hidden=128):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden),
@@ -52,53 +52,46 @@ def flatten_obs(obs: np.ndarray) -> np.ndarray:
 
 
 def train_fast_dqn(
-    episodes=12000,  # ✅ increased
+    episodes=8000,
     size=30,
     model_path="fast_dqn_dynamic_30.pt",
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device, flush=True)
 
-    max_steps = size * size * 2  # 1800
+    # ✅ BIGGEST SPEED WIN: cap max steps
+    max_steps = 600  # was 1800; keeps training fast
     env = gym.make("gymnasium_env/GridWorld-v0", size=size, render_mode=None, max_steps=max_steps)
 
     obs0, _ = env.reset()
-
-    # ✅ SANITY CHECK (prevents your error)
     if not hasattr(obs0, "shape"):
-        raise RuntimeError(
-            "Environment returned an INT state (Discrete). "
-            "You are using an old GridWorld. "
-            "Make sure gymnasium_env/gridworld_env.py has Box observation and restart runtime."
-        )
-
-    if obs0.shape != (3, size, size):
-        raise RuntimeError(f"Wrong obs shape {obs0.shape}, expected {(3, size, size)}")
+        raise RuntimeError("Env returned int. You are not using the Box-observation env.")
 
     obs_dim = obs0.size
     n_actions = env.action_space.n
 
-    policy_net = DQN(obs_dim, n_actions, hidden=256).to(device)
-    target_net = DQN(obs_dim, n_actions, hidden=256).to(device)
+    policy_net = DQN(obs_dim, n_actions, hidden=128).to(device)
+    target_net = DQN(obs_dim, n_actions, hidden=128).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
     optimizer = optim.Adam(policy_net.parameters(), lr=1e-3)
     loss_fn = nn.SmoothL1Loss()
 
-    buffer = ReplayBuffer(capacity=120_000)
+    buffer = ReplayBuffer(capacity=60_000)
 
     gamma = 0.99
     batch_size = 64
-    warmup = 1500
+    warmup = 800
 
     epsilon = 1.0
     epsilon_min = 0.05
-    epsilon_decay = 0.9994
+    epsilon_decay = 0.9993
 
-    target_update_steps = 600
+    target_update_steps = 500
     step_count = 0
-    train_every = 4
+
+    train_every = 8  # ✅ fewer updates = faster
 
     success_window = deque(maxlen=100)
 
@@ -130,6 +123,7 @@ def train_fast_dqn(
             s_vec = s2_vec
             ep_reward += reward
 
+            # ✅ train only every N steps
             if (step_count % train_every == 0) and len(buffer) >= max(warmup, batch_size):
                 s_b, a_b, r_b, s2_b, done_b = buffer.sample(batch_size)
 
@@ -161,8 +155,10 @@ def train_fast_dqn(
 
         if (ep + 1) % 50 == 0:
             sr = sum(success_window) / len(success_window)
-            print(f"Ep {ep+1}/{episodes} | reward {ep_reward:.1f} | eps {epsilon:.3f} | success(100) {sr:.2f}",
-                  flush=True)
+            print(
+                f"Ep {ep+1}/{episodes} | reward {ep_reward:.1f} | eps {epsilon:.3f} | success(100) {sr:.2f}",
+                flush=True
+            )
 
     env.close()
     torch.save(policy_net.state_dict(), model_path)
